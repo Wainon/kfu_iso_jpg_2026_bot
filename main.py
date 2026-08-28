@@ -39,7 +39,7 @@ WAITING_GROUP, CHOOSE_PARITY, CHOOSE_SUBGROUP, WAITING_ACTION = range(4)
 
 DAY_NAMES = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб"}
 PARITY_LABEL = {"ch": "чётная", "nch": "нечётная"}
-PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт"}
+PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт", "чет": "чёт", "нечет": "нечёт", "чёт": "чёт", "нечёт": "нечёт"}
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
     [KeyboardButton("/start"), KeyboardButton("/my")]
@@ -132,10 +132,18 @@ def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
     week_dates = {(monday + timedelta(days=i)).strftime("%Y-%m-%d"): i + 1 for i in range(6)}
     
     # Используем словарь для преобразования чётности
-    if parity not in PARITY_LESSON_VALUE:
-        logger.error(f"Неизвестное значение чётности: {parity}")
+    # Нормализуем чётность: в старых сохранённых данных/API могут встречаться
+    # разные варианты одного и того же значения. Никогда не допускаем KeyError.
+    parity_aliases = {
+        "ch": "ch", "nch": "nch",
+        "чет": "ch", "нечет": "nch",
+        "чёт": "ch", "нечёт": "nch",
+    }
+    parity = parity_aliases.get(str(parity).strip().lower(), parity)
+    if parity not in ("ch", "nch"):
+        logger.error("Неизвестное значение чётности: %r", parity)
         return []
-    
+
     parity_value = PARITY_LESSON_VALUE[parity]
     result = []
     
@@ -466,7 +474,8 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     all_user_data = load_user_data()
     all_user_data[user_id] = {
         "group_code": group_code,
-        "subgroup": subgroup
+        "subgroup": subgroup,
+        "parity": context.user_data.get("parity", "ch")
     }
     save_user_data(all_user_data)
     logger.info(f"Данные сохранены для пользователя {user_id}")
@@ -638,6 +647,10 @@ async def action_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     context.user_data["data"] = data
     context.user_data["index_data"] = get_index()
+    context.user_data["monday"] = find_week_monday(
+        context.user_data["index_data"],
+        context.user_data.get("parity", "ch"),
+    )
     await send_schedule_image(update, context, subgroup=subgroup)
     return WAITING_ACTION
 
@@ -708,6 +721,11 @@ def main() -> None:
         per_chat=True,
     )
     application.add_handler(conversation)
+
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.exception("Необработанная ошибка при обработке обновления", exc_info=context.error)
+
+    application.add_error_handler(error_handler)
     logger.info("Бот запущен")
     application.run_polling()
 
