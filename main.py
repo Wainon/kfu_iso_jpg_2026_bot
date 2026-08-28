@@ -33,11 +33,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(__name__)  # ИСПРАВЛЕНО: было logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 WAITING_GROUP, CHOOSE_PARITY, CHOOSE_SUBGROUP, WAITING_ACTION = range(4)
 
-# ИСПРАВЛЕНО: убраны лишние пробелы в концах строк
 DAY_NAMES = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб"}
 PARITY_LABEL = {"ch": "чётная", "nch": "нечётная"}
 PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт"}
@@ -73,11 +72,10 @@ def parse_group_input(user_input: str) -> tuple:
     """Разбирает ввод пользователя: 'ИВТ-б-о-242(2)' -> ('ИВТ-б-о-242', '2').
     Если подгруппа не указана, возвращает '1' по умолчанию."""
     user_input = user_input.strip()
-    # ИСПРАВЛЕНО: регулярное выражение для скобок
     match = re.match(r'^(.+?)\s*\((\d+)\)\s*$', user_input)
     if match:
         return match.group(1).strip(), match.group(2).strip()
-    return user_input, "1"  # По умолчанию подгруппа 1
+    return user_input, "1"
 
 def clean_subgroup(sg_value):
     """Извлекает номер подгруппы из строки API: '(п/гр 2)' -> '2'."""
@@ -133,7 +131,11 @@ def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
     lessons = data.get("занятия", [])
     week_dates = {(monday + timedelta(days=i)).strftime("%Y-%m-%d"): i + 1 for i in range(6)}
     
-    # ИСПРАВЛЕНО: теперь ключ "ch" или "nch" найдется без ошибки KeyError
+    # Используем словарь для преобразования чётности
+    if parity not in PARITY_LESSON_VALUE:
+        logger.error(f"Неизвестное значение чётности: {parity}")
+        return []
+    
     parity_value = PARITY_LESSON_VALUE[parity]
     result = []
     
@@ -204,7 +206,6 @@ def _load_fonts():
         "footer": _load(candidates_regular, 13),
     }
 
-# ИСПРАВЛЕНО: убраны пробелы в концах строк ключей
 LESSON_COLORS = {
     "ЛК": ("#cdeecd", "#8fcf8f"),
     "ПЗ": ("#f4ddc0", "#d8ab72"),
@@ -252,7 +253,7 @@ def create_schedule_image(group_code: str, lessons: list, index_data: dict, mond
     x0 = MARGIN
     y = MARGIN
     subgroup_suffix = f"({subgroup})" if subgroup != "all" else ""
-    title = f"{group_code}{subgroup_suffix} | {group_info.get('course', '')} Курс | {PARITY_LABEL[parity]} неделя"
+    title = f"{group_code}{subgroup_suffix} | {group_info.get('course', '')} Курс | {PARITY_LABEL.get(parity, 'неизвестная')} неделя"
     bbox = draw.textbbox((0, 0), title, font=fonts["title"])
     title_w = bbox[2] - bbox[0]
     draw.text(((width - title_w) / 2, y), title, fill="#111111", font=fonts["title"])
@@ -577,7 +578,7 @@ async def send_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE
         chat_id = update.effective_chat.id
         await context.bot.send_message(
             chat_id, 
-            f"На {PARITY_LABEL[parity]} неделе для подгруппы {subgroup} занятий нет.\n"
+            f"На {PARITY_LABEL.get(parity, 'неизвестной')} неделе для подгруппы {subgroup} занятий нет.\n"
             f"Попробуйте выбрать другую подгруппу или обновить расписание."
         )
         return
@@ -603,7 +604,7 @@ async def switch_parity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["parity"] = new_parity
     index_data = context.user_data.get("index_data", get_index())
     context.user_data["monday"] = find_week_monday(index_data, new_parity)
-    await query.message.reply_text(f"🔄 Переключаю на {PARITY_LABEL[new_parity]} неделю...")
+    await query.message.reply_text(f"🔄 Переключаю на {PARITY_LABEL.get(new_parity, 'неизвестную')} неделю...")
     await send_schedule_image(update, context, subgroup=context.user_data.get("subgroup", "1"))
     return WAITING_ACTION
 
@@ -703,11 +704,12 @@ def main() -> None:
             CommandHandler("cancel", cancel),
             CommandHandler("start", start),
         ],
+        per_message=True,
+        per_chat=True,
     )
     application.add_handler(conversation)
     logger.info("Бот запущен")
     application.run_polling()
 
-# ИСПРАВЛЕНО: было if name == "main":
 if __name__ == "__main__":
     main()
