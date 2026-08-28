@@ -39,7 +39,7 @@ WAITING_GROUP, CHOOSE_PARITY, CHOOSE_SUBGROUP, WAITING_ACTION = range(4)
 
 DAY_NAMES = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб"}
 PARITY_LABEL = {"ch": "чётная", "nch": "нечётная"}
-PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт", "чет": "чёт", "нечет": "нечёт", "чёт": "чёт", "нечёт": "нечёт"}
+PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт"}
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
     [KeyboardButton("/start"), KeyboardButton("/my")]
@@ -112,38 +112,81 @@ def get_index():
 # ---------------------------------------------------------------------------
 # Логика недель, чётности и подгрупп
 # ---------------------------------------------------------------------------
+def normalize_parity(parity: str) -> str:
+    """Приводит обозначение чётности к внутренним значениям 'ch'/'nch'."""
+    value = str(parity or "").strip().lower()
+    mapping = {
+        "ch": "ch", "even": "ch", "чет": "ch", "чёт": "ch",
+        "четная": "ch", "чётная": "ch", "четную": "ch", "чётную": "ch",
+        "нечет": "nch", "нечёт": "nch", "odd": "nch", "nch": "nch",
+        "нечетная": "nch", "нечётная": "nch", "нечетную": "nch", "нечётную": "nch",
+    }
+    return mapping.get(value, value)
+
+
 def find_week_monday(index_data: dict, parity: str) -> datetime:
-    weeks = index_data.get("weeks", {})
-    target_dates = set(weeks.get(parity, []))
+    """Находит понедельник ближайшей недели указанной чётности.
+
+    API КФУ в разные моменты мог возвращать ключи чётности в разных
+    форматах, поэтому здесь поддерживаются и ch/nch, и русские названия.
+    """
+    parity = normalize_parity(parity)
+    weeks = index_data.get("weeks", {}) if isinstance(index_data, dict) else {}
+
+    if not isinstance(weeks, dict):
+        weeks = {}
+
+    key_candidates = (
+        ["ch", "чет", "чёт", "четная", "чётная", "even"]
+        if parity == "ch"
+        else ["nch", "нечет", "нечёт", "нечетная", "нечётная", "odd"]
+    )
+
+    target_dates = set()
+    for key in key_candidates:
+        value = weeks.get(key)
+        if isinstance(value, list):
+            target_dates.update(str(x)[:10] for x in value)
+        elif isinstance(value, dict):
+            # На случай структуры {"даты": [...]}
+            for nested_key in ("dates", "даты", "weeks", "values"):
+                nested = value.get(nested_key)
+                if isinstance(nested, list):
+                    target_dates.update(str(x)[:10] for x in nested)
+
     today = datetime.now()
     monday = today - timedelta(days=today.weekday())
-    for _ in range(10):
-        week_dates = [(monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6)]
-        if any(d in target_dates for d in week_dates):
-            return monday
-        monday += timedelta(weeks=1)
-    return today - timedelta(days=today.weekday())
+
+    # Сначала ищем неделю в данных API.
+    for offset in range(-8, 13):
+        candidate = monday + timedelta(weeks=offset)
+        week_dates = {
+            (candidate + timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(6)
+        }
+        if target_dates.intersection(week_dates):
+            return candidate
+
+    # Если API не содержит weeks, ищем по датам занятий позже.
+    # В качестве безопасного значения возвращаем текущий понедельник.
+    logger.warning(
+        "Не удалось найти дату недели для parity=%s. "
+        "Доступные ключи weeks: %s. Используется текущий понедельник.",
+        parity, list(weeks.keys())
+    )
+    return monday
 
 def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
-    """Отбирает занятия для конкретной недели, чётности и подгруппы.
-    subgroup="all" - служебный режим для получения всех занятий.
-    subgroup="1" или "2" - показывает только выбранную подгруппу."""
-    lessons = data.get("занятия", [])
+    """Отбирает занятия для конкретной недели, чётности и подгруппы."""
+    parity = normalize_parity(parity)
+    lessons = data.get("занятия", []) if isinstance(data, dict) else []
     week_dates = {(monday + timedelta(days=i)).strftime("%Y-%m-%d"): i + 1 for i in range(6)}
     
     # Используем словарь для преобразования чётности
-    # Нормализуем чётность: в старых сохранённых данных/API могут встречаться
-    # разные варианты одного и того же значения. Никогда не допускаем KeyError.
-    parity_aliases = {
-        "ch": "ch", "nch": "nch",
-        "чет": "ch", "нечет": "nch",
-        "чёт": "ch", "нечёт": "nch",
-    }
-    parity = parity_aliases.get(str(parity).strip().lower(), parity)
-    if parity not in ("ch", "nch"):
-        logger.error("Неизвестное значение чётности: %r", parity)
+    if parity not in PARITY_LESSON_VALUE:
+        logger.error(f"Неизвестное значение чётности: {parity}")
         return []
-
+    
     parity_value = PARITY_LESSON_VALUE[parity]
     result = []
     
@@ -232,6 +275,7 @@ def _cell_colors(lesson: dict):
     return LESSON_COLORS.get(lesson_type, ("#faf7f0", "#c5a253"))
 
 def create_schedule_image(group_code: str, lessons: list, index_data: dict, monday: datetime, parity: str, subgroup: str) -> BytesIO:
+    parity = normalize_parity(parity)
     fonts = _load_fonts()
     bells = {bell["пара"]: bell for bell in index_data.get("bells", [])}
     group_info = index_data.get("groups", {}).get(group_code, {})
@@ -474,8 +518,7 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     all_user_data = load_user_data()
     all_user_data[user_id] = {
         "group_code": group_code,
-        "subgroup": subgroup,
-        "parity": context.user_data.get("parity", "ch")
+        "subgroup": subgroup
     }
     save_user_data(all_user_data)
     logger.info(f"Данные сохранены для пользователя {user_id}")
@@ -576,40 +619,69 @@ def get_schedule_keyboard(current_parity: str, current_subgroup: str, group_code
     return InlineKeyboardMarkup(keyboard)
 
 async def send_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE, subgroup: str):
-    group_code = context.user_data["group_code"]
-    data = context.user_data["data"]
-    index_data = context.user_data["index_data"]
-    parity = context.user_data["parity"]
-    monday = context.user_data["monday"]
-    lessons = filter_lessons(data, monday, parity, subgroup)
-    
-    if not lessons:
-        chat_id = update.effective_chat.id
-        await context.bot.send_message(
-            chat_id, 
-            f"На {PARITY_LABEL.get(parity, 'неизвестной')} неделе для подгруппы {subgroup} занятий нет.\n"
-            f"Попробуйте выбрать другую подгруппу или обновить расписание."
-        )
-        return
-        
+    """Формирует и отправляет PNG расписания."""
     try:
-        image_buffer = create_schedule_image(group_code, lessons, index_data, monday, parity, subgroup)
-    except Exception as exc:
-        logger.error("Ошибка при создании изображения: %s", exc)
+        group_code = context.user_data["group_code"]
+        data = context.user_data["data"]
+        index_data = context.user_data.get("index_data") or {}
+        parity = normalize_parity(context.user_data.get("parity", "ch"))
+        monday = context.user_data.get("monday")
+
+        if not isinstance(monday, datetime):
+            monday = find_week_monday(index_data, parity)
+            context.user_data["monday"] = monday
+
+        context.user_data["parity"] = parity
+        lessons = filter_lessons(data, monday, parity, subgroup)
+
+        if not lessons:
+            chat_id = update.effective_chat.id
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"На {PARITY_LABEL.get(parity, 'неизвестной')} неделе "
+                    f"для подгруппы {subgroup} занятий нет.\n"
+                    "Попробуйте переключить неделю или обновить расписание."
+                ),
+            )
+            return
+
+        image_buffer = create_schedule_image(
+            group_code, lessons, index_data, monday, parity, subgroup
+        )
+
+        reply_markup = get_schedule_keyboard(
+            parity, subgroup, group_code, context
+        )
+
+        # Всегда отправляем новое фото в тот же чат.
         chat_id = update.effective_chat.id
-        await context.bot.send_message(chat_id, "Произошла ошибка при создании расписания.")
-        return
-        
-    reply_markup = get_schedule_keyboard(parity, subgroup, group_code, context)
-    if update.callback_query:
-        await update.callback_query.message.reply_photo(photo=image_buffer, reply_markup=reply_markup)
-    else:
-        await update.message.reply_photo(photo=image_buffer, reply_markup=reply_markup)
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=image_buffer,
+            reply_markup=reply_markup,
+        )
+        logger.info(
+            "Фото расписания отправлено: group=%s parity=%s subgroup=%s lessons=%s",
+            group_code, parity, subgroup, len(lessons)
+        )
+
+    except Exception as exc:
+        logger.exception("Ошибка при отправке изображения расписания")
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Не удалось отправить фото расписания: {type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                logger.exception("Не удалось отправить сообщение об ошибке")
 
 async def switch_parity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    new_parity = query.data.split(":")[1]
+    new_parity = normalize_parity(query.data.split(":")[1])
     context.user_data["parity"] = new_parity
     index_data = context.user_data.get("index_data", get_index())
     context.user_data["monday"] = find_week_monday(index_data, new_parity)
@@ -646,10 +718,11 @@ async def action_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return WAITING_ACTION
         
     context.user_data["data"] = data
-    context.user_data["index_data"] = get_index()
+    context.user_data["index_data"] = get_index() or {}
+    parity = normalize_parity(context.user_data.get("parity", "ch"))
+    context.user_data["parity"] = parity
     context.user_data["monday"] = find_week_monday(
-        context.user_data["index_data"],
-        context.user_data.get("parity", "ch"),
+        context.user_data["index_data"], parity
     )
     await send_schedule_image(update, context, subgroup=subgroup)
     return WAITING_ACTION
@@ -674,6 +747,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text("Отменено. Чтобы начать заново, отправьте /start.", reply_markup=MAIN_KEYBOARD)
     return WAITING_GROUP
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Необработанная ошибка Telegram-обработчика", exc_info=context.error)
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⚠️ Произошла ошибка при обработке запроса. Попробуйте нажать «Обновить» или /start.",
+            )
+    except Exception:
+        logger.exception("Не удалось отправить сообщение об ошибке пользователю")
 
 # ---------------------------------------------------------------------------
 # Точка входа
@@ -721,10 +806,6 @@ def main() -> None:
         per_chat=True,
     )
     application.add_handler(conversation)
-
-    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        logger.exception("Необработанная ошибка при обработке обновления", exc_info=context.error)
-
     application.add_error_handler(error_handler)
     logger.info("Бот запущен")
     application.run_polling()
