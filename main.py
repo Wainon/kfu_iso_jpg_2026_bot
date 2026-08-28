@@ -1,12 +1,4 @@
-"""
-Телеграм-бот "Расписание КФУ" (Финальная версия для Railway).
-Функции:
-Умный парсинг ввода: "ИВТ-б-о-242" и "ИВТ-б-о-242(2)".
-Сохранение данных пользователя в JSON (с поддержкой Railway Volume).
-Постоянные кнопки под расписанием: чётная/нечётная, обновление, смена группы.
-Переключение между подгруппами (без кнопки "Все подгруппы").
-Команда /my для быстрого вызова сохранённого расписания.
-"""
+
 import logging
 import re
 import json
@@ -35,8 +27,6 @@ if not BOT_TOKEN:
 
 BOT_USERNAME = "@kfu_iso_jpg_2026_bot"
 
-# КРИТИЧЕСКИ ВАЖНО ДЛЯ RAILWAY: создаем папку data, если её нет.
-# При подключении Volume в Railway (путь /app/data), файлы будут сохраняться на постоянный диск.
 os.makedirs("data", exist_ok=True)
 USER_DATA_FILE = "data/user_data.json"
 
@@ -44,12 +34,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(__name__)  # Исправлено: было logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 WAITING_GROUP, CHOOSE_PARITY, CHOOSE_SUBGROUP, WAITING_ACTION = range(4)
-DAY_NAMES = {1: "Пн ", 2: "Вт ", 3: "Ср ", 4: "Чт ", 5: "Пт ", 6: "Сб "}
-PARITY_LABEL = {"ch ": "чётная ", "nch ": "нечётная "}
-PARITY_LESSON_VALUE = {"ch ": "чёт ", "nch ": "нечёт "}
+
+DAY_NAMES = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб"}
+PARITY_LABEL = {"ch": "чётная", "nch": "нечётная"}
+PARITY_LESSON_VALUE = {"ch": "чёт", "nch": "нечёт"}
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
     [KeyboardButton("/start"), KeyboardButton("/my")]
@@ -79,12 +70,14 @@ def save_user_data(user_data: dict):
 # Утилиты и парсинг
 # ---------------------------------------------------------------------------
 def parse_group_input(user_input: str) -> tuple:
-    """Разбирает ввод пользователя: 'ИВТ-б-о-242(2)' -> ('ИВТ-б-о-242', '2')."""
+    """Разбирает ввод пользователя: 'ИВТ-б-о-242(2)' -> ('ИВТ-б-о-242', '2').
+    Если подгруппа не указана, возвращает '1' по умолчанию."""
     user_input = user_input.strip()
     match = re.match(r'^(.+?)\s*\((\d+)\)\s*$', user_input)
     if match:
         return match.group(1).strip(), match.group(2).strip()
-    return user_input, "all"
+    # ИЗМЕНЕНО: возвращаем "1" вместо "all"
+    return user_input, "1"
 
 def clean_subgroup(sg_value):
     """Извлекает номер подгруппы из строки API: '(п/гр 2)' -> '2'."""
@@ -134,7 +127,9 @@ def find_week_monday(index_data: dict, parity: str) -> datetime:
     return today - timedelta(days=today.weekday())
 
 def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
-    """Отбирает занятия для конкретной недели, чётности и подгруппы."""
+    """Отбирает занятия для конкретной недели, чётности и подгруппы.
+    subgroup="all" - служебный режим для получения всех занятий (используется внутри кода).
+    subgroup="1" или "2" - показывает только выбранную подгруппу."""
     lessons = data.get("занятия", [])
     week_dates = {(monday + timedelta(days=i)).strftime("%Y-%m-%d"): i + 1 for i in range(6)}
     parity_value = PARITY_LESSON_VALUE[parity]
@@ -155,14 +150,14 @@ def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
         lesson_subgroup_raw = lesson.get("подгруппа")
         lesson_subgroup = clean_subgroup(lesson_subgroup_raw)
         
-        # Фильтрация по подгруппе
+        # ИЗМЕНЕНО: фильтрация только если subgroup не "all" (служебный режим)
         if subgroup != "all":
             if lesson_subgroup is None:
-                pass
+                pass  # Общее занятие - показываем всегда
             elif str(lesson_subgroup) == str(subgroup):
-                pass
+                pass  # Совпадает с выбранной подгруппой
             else:
-                continue
+                continue  # Другая подгруппа - пропускаем
         result.append(lesson)
         
     logger.info(f"Отфильтровано занятий: {len(result)} для подгруппы {subgroup}")
@@ -209,21 +204,21 @@ def _load_fonts():
     }
 
 LESSON_COLORS = {
-    "ЛК ": ("#cdeecd ", "#8fcf8f "),
-    "ПЗ ": ("#f4ddc0 ", "#d8ab72 "),
-    "ЛР ": ("#f4ddc0 ", "#d8ab72 "),
-    "ЭЛЕКТИВНАЯ ": ("#f0eec0 ", "#cdc774 "),
+    "ЛК": ("#cdeecd", "#8fcf8f"),
+    "ПЗ": ("#f4ddc0", "#d8ab72"),
+    "ЛР": ("#f4ddc0", "#d8ab72"),
+    "ЭЛЕКТИВНАЯ": ("#f0eec0", "#cdc774"),
 }
-EMPTY_COLOR = "#e8e8e8 "
-EMPTY_BORDER = "#d3d3d3 "
-HEADER_BG = "#bdbdbd "
+EMPTY_COLOR = "#e8e8e8"
+EMPTY_BORDER = "#d3d3d3"
+HEADER_BG = "#bdbdbd"
 
 def _cell_colors(lesson: dict):
-    subject = (lesson.get("предмет ") or " ").upper()
-    lesson_type = (lesson.get("вид ") or " ").upper()
-    if "ЭЛЕКТИВ " in subject or "ЭЛЕКТИВ " in lesson_type:
-        return LESSON_COLORS["ЭЛЕКТИВНАЯ "]
-    return LESSON_COLORS.get(lesson_type, ("#faf7f0 ", "#c5a253 "))
+    subject = (lesson.get("предмет") or " ").upper()
+    lesson_type = (lesson.get("вид") or " ").upper()
+    if "ЭЛЕКТИВ" in subject or "ЭЛЕКТИВ" in lesson_type:
+        return LESSON_COLORS["ЭЛЕКТИВНАЯ"]
+    return LESSON_COLORS.get(lesson_type, ("#faf7f0", "#c5a253"))
 
 def create_schedule_image(group_code: str, lessons: list, index_data: dict, monday: datetime, parity: str, subgroup: str) -> BytesIO:
     fonts = _load_fonts()
@@ -254,6 +249,7 @@ def create_schedule_image(group_code: str, lessons: list, index_data: dict, mond
     
     x0 = MARGIN
     y = MARGIN
+    # ИЗМЕНЕНО: всегда показываем подгруппу в заголовке
     subgroup_suffix = f"({subgroup})" if subgroup != "all" else ""
     title = f"{group_code}{subgroup_suffix} | {group_info.get('course', '')} Курс | {PARITY_LABEL[parity]} неделя"
     bbox = draw.textbbox((0, 0), title, font=fonts["title"])
@@ -362,7 +358,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logger.info(f"Новый пользователь {user_id}, запрашиваем группу")
         context.user_data.clear()
         await update.message.reply_text(
-            "Введите код группы (например: ИВТ-б-о-242(2)).\n",
+            "Введите код группы (например: ИВТ-б-о-242(2)).\n\n"
+            "Если не указать подгруппу, будет выбрана подгруппа 1.\n\n",
             reply_markup=MAIN_KEYBOARD
         )
         return WAITING_GROUP
@@ -396,21 +393,24 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     else:
         context.user_data["monday"] = find_week_monday(context.user_data["index_data"], context.user_data["parity"])
         
-    subgroup = context.user_data.get("subgroup", "all")
+    # ИЗМЕНЕНО: по умолчанию подгруппа "1"
+    subgroup = context.user_data.get("subgroup", "1")
     monday = context.user_data["monday"]
     parity = context.user_data["parity"]
     
+    # Получаем все занятия для проверки доступных подгрупп
     all_lessons = filter_lessons(data, monday, parity, subgroup="all")
     available_subgroups = get_available_subgroups(all_lessons)
     
-    if subgroup != "all" and str(subgroup) not in available_subgroups:
-        logger.warning(f"Подгруппа {subgroup} не найдена в актуальном расписании, сбрасываем на all")
-        context.user_data["subgroup"] = "all"
-        subgroup = "all"
+    # ИЗМЕНЕНО: если выбранная подгруппа не найдена, сбрасываем на "1"
+    if str(subgroup) not in available_subgroups:
+        logger.warning(f"Подгруппа {subgroup} не найдена в расписании, сбрасываем на 1")
+        context.user_data["subgroup"] = "1"
+        subgroup = "1"
         user_id = str(update.effective_user.id)
         all_user_data = load_user_data()
         if user_id in all_user_data:
-            all_user_data[user_id]["subgroup"] = "all"
+            all_user_data[user_id]["subgroup"] = "1"
             save_user_data(all_user_data)
             
     await send_schedule_image(update, context, subgroup=subgroup)
@@ -432,20 +432,20 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     if not group_code or len(group_code) < 3:
         await update.message.reply_text(
-            "Неверный формат группы. Введите код, например: ИВТ-б-о-242",
+            "Неверный формат группы. Введите код, например: ИВТ-б-о-242(2)",
             reply_markup=MAIN_KEYBOARD
         )
         return WAITING_GROUP
         
     context.user_data["subgroup"] = subgroup
-    await update.message.reply_text("Загружаю расписание, подождите...")
+    await update.message.reply_text("⏳ Загружаю расписание, подождите...")
     data = get_schedule(group_code)
     
     if not data or not data.get("занятия"):
         await update.message.reply_text(
             "Не удалось найти расписание для этой группы.\n"
             "Проверьте правильность кода и попробуйте снова.\n\n"
-            "Примеры: ИВТ-б-о-242, ИВТ-б-о-242(2)",
+            "Пример: ИВТ-б-о-242(2)",
             reply_markup=MAIN_KEYBOARD
         )
         return WAITING_GROUP
@@ -497,18 +497,23 @@ async def choose_parity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     all_lessons = filter_lessons(data, monday, parity, subgroup="all")
     subgroups = get_available_subgroups(all_lessons)
-    current_subgroup = context.user_data.get("subgroup", "all")
     
-    if current_subgroup != "all" and str(current_subgroup) in subgroups:
+    # ИЗМЕНЕНО: по умолчанию подгруппа "1"
+    current_subgroup = context.user_data.get("subgroup", "1")
+    
+    # Если подгруппа существует в расписании - используем её
+    if str(current_subgroup) in subgroups:
         await query.edit_message_text(f"Показываю расписание для подгруппы {current_subgroup}...")
         await send_schedule_image(update, context, subgroup=current_subgroup)
         return WAITING_ACTION
-    elif len(subgroups) < 2:
-        context.user_data["subgroup"] = "all"
+    elif len(subgroups) == 0:
+        # Нет подгрупп вообще - показываем все занятия (служебный режим)
+        context.user_data["subgroup"] = "1"
         await query.edit_message_text("Формирую расписание...")
         await send_schedule_image(update, context, subgroup="all")
         return WAITING_ACTION
     else:
+        # Предлагаем выбрать подгруппу
         keyboard = [
             [InlineKeyboardButton(f"{group_code}({sg})", callback_data=f"subgroup:{sg}")]
             for sg in subgroups
@@ -536,9 +541,12 @@ async def choose_subgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return WAITING_ACTION
 
 def get_schedule_keyboard(current_parity: str, current_subgroup: str, group_code: str, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    """Формирует постоянные кнопки под изображением расписания."""
     data = context.user_data.get("data", {})
     monday = context.user_data.get("monday")
     parity = context.user_data.get("parity", "ch")
+    
+    # Получаем все занятия для определения доступных подгрупп
     all_lessons = filter_lessons(data, monday, parity, subgroup="all")
     available_subgroups = get_available_subgroups(all_lessons)
     
@@ -549,6 +557,7 @@ def get_schedule_keyboard(current_parity: str, current_subgroup: str, group_code
         ]
     ]
     
+    # Кнопки переключения подгрупп (только конкретные)
     if len(available_subgroups) >= 2:
         subgroup_buttons = []
         for sg in available_subgroups:
@@ -575,18 +584,11 @@ async def send_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if not lessons:
         chat_id = update.effective_chat.id
-        if subgroup != "all":
-            await context.bot.send_message(
-                chat_id, 
-                f"На {PARITY_LABEL[parity]} неделе для подгруппы {subgroup} занятий нет.\n"
-                f"Попробуйте выбрать другую подгруппу или обновить расписание."
-            )
-        else:
-            await context.bot.send_message(
-                chat_id, 
-                f"На {PARITY_LABEL[parity]} неделе занятий не найдено.\n"
-                f"Попробуйте переключить чётность или обновить расписание."
-            )
+        await context.bot.send_message(
+            chat_id, 
+            f"На {PARITY_LABEL[parity]} неделе для подгруппы {subgroup} занятий нет.\n"
+            f"Попробуйте выбрать другую подгруппу или обновить расписание."
+        )
         return
         
     try:
@@ -611,7 +613,8 @@ async def switch_parity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     index_data = context.user_data.get("index_data", get_index())
     context.user_data["monday"] = find_week_monday(index_data, new_parity)
     await query.message.reply_text(f"🔄 Переключаю на {PARITY_LABEL[new_parity]} неделю...")
-    await send_schedule_image(update, context, subgroup=context.user_data.get("subgroup", "all"))
+    # ИЗМЕНЕНО: по умолчанию подгруппа "1"
+    await send_schedule_image(update, context, subgroup=context.user_data.get("subgroup", "1"))
     return WAITING_ACTION
 
 async def switch_subgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -634,7 +637,8 @@ async def action_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer("Обновляю данные...")
     group_code = context.user_data.get("group_code")
-    subgroup = context.user_data.get("subgroup", "all")
+    # ИЗМЕНЕНО: по умолчанию подгруппа "1"
+    subgroup = context.user_data.get("subgroup", "1")
     await query.message.reply_text("🔄 Загружаю актуальное расписание...")
     data = get_schedule(group_code)
     
@@ -715,5 +719,5 @@ def main() -> None:
     logger.info("Бот запущен")
     application.run_polling()
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     main()
