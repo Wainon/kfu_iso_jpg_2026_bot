@@ -1,9 +1,4 @@
-"""Шрифт DejaVu Sans (обычный и жирный), зашитый в base64.
-Нужен, чтобы кириллица на изображении расписания рисовалась
-корректно ВНЕ ЗАВИСИМОСТИ от того, какие шрифты установлены
-в системе хостинга (Railway и т.п.) — файл не нужно деплоить отдельно.
-Лицензия DejaVu Fonts: свободная, разрешено встраивание. https://dejavu-fonts.github.io/License.html
-"""
+
 
 DEJAVU_SANS_REGULAR_B64 = (
     "AAEAAAAUAQAABABARkZUTaH5odYAAAFMAAAAHEdERUaO7JTDAAABaAAAApJHUE9TVoDENQAAA/wAAJ6KR1NVQsHQQFkAAKKIAAAV3k1BVEinMjh9AAC4aAAA"
