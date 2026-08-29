@@ -10,7 +10,6 @@ from io import BytesIO
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-from fonts_data import DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -42,10 +41,89 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------- #
+# Загрузка шрифтов из интернета
+# --------------------------------------------------------------------------- #
+
+# URL для скачивания шрифтов DejaVu Sans
+FONT_URLS = {
+    "regular": "https://github.com/dejavu-fonts/dejavu-fonts/raw/refs/heads/master/ttf/DejaVuSans.ttf",
+    "bold": "https://github.com/dejavu-fonts/dejavu-fonts/raw/refs/heads/master/ttf/DejaVuSans-Bold.ttf",
+}
+
+# Папка для хранения шрифтов
+FONTS_DIR = "fonts"
+os.makedirs(FONTS_DIR, exist_ok=True)
+
+
+def download_font(url: str, filename: str) -> bytes:
+    """Скачивает шрифт по URL и возвращает его содержимое."""
+    font_path = os.path.join(FONTS_DIR, filename)
+    
+    # Если шрифт уже скачан, читаем из файла
+    if os.path.exists(font_path):
+        logger.info(f"Шрифт {filename} уже скачан, загружаем из файла")
+        with open(font_path, "rb") as f:
+            return f.read()
+    
+    logger.info(f"Скачиваю шрифт {filename} из интернета...")
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        # Сохраняем шрифт на диск
+        with open(font_path, "wb") as f:
+            f.write(response.content)
+        
+        logger.info(f"Шрифт {filename} успешно скачан")
+        return response.content
+    except Exception as exc:
+        logger.error(f"Ошибка скачивания шрифта {filename}: {exc}")
+        raise RuntimeError(f"Не удалось скачать шрифт {filename}. Проверьте интернет-соединение.")
+
+
+def _load_fonts():
+    """Загружает шрифты из интернета или из кэша на диске."""
+    
+    def _load(font_bytes, size):
+        try:
+            return ImageFont.truetype(io.BytesIO(font_bytes), size)
+        except Exception as exc:
+            logger.error(f"Ошибка загрузки шрифта размера {size}: {exc}")
+            return ImageFont.load_default()
+    
+    try:
+        # Скачиваем шрифты при первом запуске
+        regular_bytes = download_font(FONT_URLS["regular"], "DejaVuSans.ttf")
+        bold_bytes = download_font(FONT_URLS["bold"], "DejaVuSans-Bold.ttf")
+        
+        return {
+            "title": _load(bold_bytes, 30),
+            "day": _load(bold_bytes, 18),
+            "date": _load(regular_bytes, 14),
+            "period": _load(bold_bytes, 16),
+            "time": _load(regular_bytes, 13),
+            "subject": _load(bold_bytes, 14),
+            "small": _load(regular_bytes, 12),
+            "footer": _load(regular_bytes, 13),
+        }
+    except Exception as exc:
+        logger.error(f"Не удалось загрузить шрифты: {exc}")
+        logger.warning("Использую встроенный шрифт по умолчанию (кириллица может отображаться некорректно)")
+        default_font = ImageFont.load_default()
+        return {
+            "title": default_font,
+            "day": default_font,
+            "date": default_font,
+            "period": default_font,
+            "time": default_font,
+            "subject": default_font,
+            "small": default_font,
+            "footer": default_font,
+        }
+
+
 # Диагностика: проверяем, собран ли Pillow с поддержкой FreeType.
-# Без FreeType ImageFont.truetype() не работает вообще (даже со встроенным шрифтом),
-# и Pillow всегда откатывается на крошечный ImageFont.load_default() -
-# именно так на изображении получаются "квадратики" вместо кириллицы.
 try:
     from PIL import features as _pil_features
     _has_freetype = _pil_features.check("freetype2")
@@ -328,41 +406,6 @@ def get_available_subgroups(lessons: list) -> list:
 # --------------------------------------------------------------------------- #
 # Отрисовка изображения расписания
 # --------------------------------------------------------------------------- #
-
-# Шрифты декодируем один раз при старте прямо из base64, зашитого в fonts_data.py —
-# так кириллица рисуется корректно на любом хостинге, даже если в системе
-# не установлено вообще никаких .ttf-шрифтов, и не нужно деплоить отдельные файлы шрифтов.
-_FONT_REGULAR_BYTES = base64.b64decode(DEJAVU_SANS_REGULAR_B64)
-_FONT_BOLD_BYTES = base64.b64decode(DEJAVU_SANS_BOLD_B64)
-
-
-def _load_fonts():
-    """Загружает шрифты для отрисовки из встроенных (base64) данных."""
-
-    def _load(font_bytes, size):
-        try:
-            return ImageFont.truetype(io.BytesIO(font_bytes), size)
-        except Exception:
-            logger.exception(
-                "Не удалось загрузить встроенный шрифт размера %s — "
-                "текст на изображении будет отображаться некорректно (квадратики). "
-                "См. полный traceback выше и проверьте поддержку FreeType в Pillow "
-                "(смотрите строку 'Pillow собран...' в самом начале логов при старте бота).",
-                size,
-            )
-            return ImageFont.load_default()
-
-    return {
-        "title": _load(_FONT_BOLD_BYTES, 30),
-        "day": _load(_FONT_BOLD_BYTES, 18),
-        "date": _load(_FONT_REGULAR_BYTES, 14),
-        "period": _load(_FONT_BOLD_BYTES, 16),
-        "time": _load(_FONT_REGULAR_BYTES, 13),
-        "subject": _load(_FONT_BOLD_BYTES, 14),
-        "small": _load(_FONT_REGULAR_BYTES, 12),
-        "footer": _load(_FONT_REGULAR_BYTES, 13),
-    }
-
 
 LESSON_COLORS = {
     "ЛК": ("#cdeecd", "#8fcf8f"),
@@ -904,6 +947,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Запуск бота."""
+    # При старте загружаем шрифты в кэш
+    try:
+        _load_fonts()
+        logger.info("Шрифты успешно загружены при старте")
+    except Exception as exc:
+        logger.error(f"Не удалось загрузить шрифты при старте: {exc}")
+        logger.warning("Бот продолжит работу со встроенным шрифтом по умолчанию")
+
     application = Application.builder().token(BOT_TOKEN).build()
 
     conversation = ConversationHandler(
