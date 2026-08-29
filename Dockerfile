@@ -15,4 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN ls -l /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+    /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+
 CMD ["python", "main.py"]
