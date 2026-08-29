@@ -39,9 +39,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Диагностика: проверяем, собран ли Pillow с поддержкой FreeType.
-# Без FreeType ImageFont.truetype() не работает вообще (даже со встроенным шрифтом),
-# и Pillow всегда откатывается на крошечный ImageFont.load_default() -
-# именно так на изображении получаются "квадратики" вместо кириллицы.
 try:
     from PIL import features as _pil_features
     _has_freetype = _pil_features.check("freetype2")
@@ -71,6 +68,54 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup([
     [KeyboardButton("/start"), KeyboardButton("/my")]
 ], resize_keyboard=True)
 
+# --------------------------------------------------------------------------- #
+# Шрифты (глобальный кеш)
+# --------------------------------------------------------------------------- #
+
+FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+_FONTS_CACHE = None
+
+
+def _load_fonts():
+    """Загружает системные DejaVu Sans шрифты с поддержкой кириллицы."""
+
+    def _load(font_path, size):
+        try:
+            font = ImageFont.truetype(font_path, size)
+            logger.info("Загружен шрифт: %s, размер=%s", font_path, size)
+            return font
+        except Exception as exc:
+            logger.exception(
+                "Не удалось загрузить шрифт %s размера %s: %s",
+                font_path,
+                size,
+                exc,
+            )
+            raise RuntimeError(
+                f"Не удалось загрузить шрифт {font_path}"
+            ) from exc
+
+    return {
+        "title": _load(FONT_BOLD, 30),
+        "day": _load(FONT_BOLD, 18),
+        "date": _load(FONT_REGULAR, 14),
+        "period": _load(FONT_BOLD, 16),
+        "time": _load(FONT_REGULAR, 13),
+        "subject": _load(FONT_BOLD, 14),
+        "small": _load(FONT_REGULAR, 12),
+        "footer": _load(FONT_REGULAR, 13),
+    }
+
+
+def get_fonts():
+    """Возвращает загруженные шрифты (с кешированием)."""
+    global _FONTS_CACHE
+    if _FONTS_CACHE is None:
+        _FONTS_CACHE = _load_fonts()
+    return _FONTS_CACHE
+
 
 # --------------------------------------------------------------------------- #
 # Сохранение и загрузка данных пользователей
@@ -94,6 +139,46 @@ def save_user_data(user_data: dict):
             json.dump(user_data, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         logger.error("Ошибка сохранения данных пользователей: %s", exc)
+
+
+def migrate_user_data(user_data: dict, user_id: str, username: str, full_name: str) -> dict:
+    """
+    Обновляет данные пользователя, добавляя недостающие поля.
+    Возвращает обновлённые данные.
+    """
+    if user_id not in user_data:
+        return user_data
+    
+    user_info = user_data[user_id]
+    
+    # Добавляем username, если его нет
+    if "username" not in user_info:
+        user_info["username"] = username
+    
+    # Добавляем full_name, если его нет
+    if "full_name" not in user_info:
+        user_info["full_name"] = full_name
+    
+    # Добавляем last_used, если его нет
+    if "last_used" not in user_info:
+        user_info["last_used"] = datetime.now().isoformat()
+    
+    # Убеждаемся, что subgroup есть (для очень старых данных)
+    if "subgroup" not in user_info:
+        user_info["subgroup"] = "1"
+    
+    return user_data
+
+
+def get_user_info(update: Update) -> tuple:
+    """
+    Возвращает (user_id, username, full_name) для текущего пользователя.
+    """
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "без_username"
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "без_имени"
+    return user_id, username, full_name
 
 
 # --------------------------------------------------------------------------- #
@@ -124,18 +209,11 @@ def clean_subgroup(sg_value):
     return sg_str
 
 
-# В API КФУ пометка подгруппы обычно встроена прямо в название предмета,
-# например: "Дискретная математика (п/гр 2)". Отдельного поля может не быть.
 SUBGROUP_TAG_RE = re.compile(r'\(?\s*п\s*/?\s*г\s*р\.?\s*(\d+)\s*\)?', re.IGNORECASE)
 
 
 def detect_lesson_subgroup(lesson: dict):
-    """
-    Определяет номер подгруппы занятия.
-    Сначала проверяем явное поле API (если оно вообще есть и заполнено),
-    затем ищем пометку вида "(п/гр 2)" в названии предмета.
-    Возвращает None, если занятие общее (без деления на подгруппы).
-    """
+    """Определяет номер подгруппы занятия."""
     raw = lesson.get("подгруппа")
     if raw:
         cleaned = clean_subgroup(raw)
@@ -151,8 +229,7 @@ def detect_lesson_subgroup(lesson: dict):
 
 
 def normalize_subgroup(value) -> str:
-    """Приводит значение подгруппы к конкретному номеру, по умолчанию "1".
-    Также превращает старое значение "all" (из более ранних версий бота) в "1"."""
+    """Приводит значение подгруппы к конкретному номеру, по умолчанию "1"."""
     if not value or str(value).strip().lower() == "all":
         return "1"
     return str(value).strip()
@@ -219,16 +296,13 @@ def find_week_monday(index_data: dict, parity: str) -> datetime:
     if not isinstance(weeks, dict):
         weeks = {}
 
-    # Пробуем найти даты в разных форматах
     target_dates = set()
     
-    # Прямой доступ по ключу
     if parity in weeks:
         dates = weeks[parity]
         if isinstance(dates, list):
             target_dates.update(str(x)[:10] for x in dates)
     
-    # Альтернативные ключи
     alt_keys = {"ch": ["чет", "чёт", "четная", "чётная", "even"],
                 "nch": ["нечет", "нечёт", "нечетная", "нечётная", "odd"]}
     
@@ -240,7 +314,6 @@ def find_week_monday(index_data: dict, parity: str) -> datetime:
     today = datetime.now()
     monday = today - timedelta(days=today.weekday())
 
-    # Ищем неделю в данных API
     for offset in range(-8, 13):
         candidate = monday + timedelta(weeks=offset)
         week_dates = {
@@ -288,20 +361,14 @@ def lessons_for_week(data: dict, monday: datetime, parity: str) -> list:
 
 
 def filter_lessons(data: dict, monday: datetime, parity: str, subgroup: str):
-    """
-    Отбирает занятия для конкретной недели, чётности и подгруппы.
-
-    subgroup всегда конкретное значение ("1", "2", ...) — понятия "все подгруппы"
-    больше нет. Общие занятия (без пометки подгруппы) показываются всегда,
-    занятия чужой подгруппы исключаются.
-    """
+    """Отбирает занятия для конкретной недели, чётности и подгруппы."""
     week_lessons = lessons_for_week(data, monday, parity)
     result = []
 
     for lesson in week_lessons:
         lesson_subgroup = detect_lesson_subgroup(lesson)
         if lesson_subgroup is not None and str(lesson_subgroup) != str(subgroup):
-            continue  # занятие другой подгруппы - исключаем
+            continue
         result.append(lesson)
 
     logger.info(f"Отфильтровано занятий: {len(result)} для подгруппы {subgroup}")
@@ -324,47 +391,6 @@ def get_available_subgroups(lessons: list) -> list:
 # --------------------------------------------------------------------------- #
 # Отрисовка изображения расписания
 # --------------------------------------------------------------------------- #
-
-
-# --------------------------------------------------------------------------- #
-# Шрифты
-# --------------------------------------------------------------------------- #
-
-FONT_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-
-
-def _load_fonts():
-    """Загружает системные DejaVu Sans шрифты с поддержкой кириллицы."""
-
-    def _load(font_path, size):
-        try:
-            font = ImageFont.truetype(font_path, size)
-            logger.info("Загружен шрифт: %s, размер=%s", font_path, size)
-            return font
-        except Exception as exc:
-            logger.exception(
-                "Не удалось загрузить шрифт %s размера %s: %s",
-                font_path,
-                size,
-                exc,
-            )
-            # Не используем ImageFont.load_default(), потому что
-            # он не поддерживает кириллицу.
-            raise RuntimeError(
-                f"Не удалось загрузить шрифт {font_path}"
-            ) from exc
-
-    return {
-        "title": _load(FONT_BOLD, 30),
-        "day": _load(FONT_BOLD, 18),
-        "date": _load(FONT_REGULAR, 14),
-        "period": _load(FONT_BOLD, 16),
-        "time": _load(FONT_REGULAR, 13),
-        "subject": _load(FONT_BOLD, 14),
-        "small": _load(FONT_REGULAR, 12),
-        "footer": _load(FONT_REGULAR, 13),
-    }
 
 LESSON_COLORS = {
     "ЛК": ("#cdeecd", "#8fcf8f"),
@@ -390,7 +416,7 @@ def create_schedule_image(group_code: str, lessons: list, index_data: dict,
                           monday: datetime, parity: str, subgroup: str) -> BytesIO:
     """Создаёт изображение расписания."""
     parity = normalize_parity(parity)
-    fonts = _load_fonts()
+    fonts = get_fonts()  # ← используется кешированный вариант
     bells = {bell["пара"]: bell for bell in index_data.get("bells", [])}
     group_info = index_data.get("groups", {}).get(group_code, {})
 
@@ -532,12 +558,18 @@ def create_schedule_image(group_code: str, lessons: list, index_data: dict,
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработчик команды /start."""
-    user_id = str(update.effective_user.id)
-    logger.info(f"Пользователь {user_id} вызвал /start")
+    user_id, username, full_name = get_user_info(update)
+    logger.info(f"Пользователь {user_id} (@{username}, {full_name}) вызвал /start")
     
     all_user_data = load_user_data()
+    
+    # Миграция старых данных
     if user_id in all_user_data:
-        logger.info(f"Найдены сохранённые данные для {user_id}: {all_user_data[user_id]}")
+        all_user_data = migrate_user_data(all_user_data, user_id, username, full_name)
+        save_user_data(all_user_data)
+    
+    if user_id in all_user_data:
+        logger.info(f"Найдены сохранённые данные для {user_id} (@{username})")
         context.user_data.update(all_user_data[user_id])
         context.user_data["subgroup"] = normalize_subgroup(context.user_data.get("subgroup"))
         await update.message.reply_text(
@@ -546,7 +578,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return await my_schedule(update, context)
     else:
-        logger.info(f"Новый пользователь {user_id}, запрашиваем группу")
+        logger.info(f"Новый пользователь {user_id} (@{username}), запрашиваем группу")
         context.user_data.clear()
         await update.message.reply_text(
             "Введите код группы (например: ИВТ-б-о-242(2)).\n\n",
@@ -579,13 +611,11 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data["data"] = data
     context.user_data["index_data"] = get_index() or {}
     
-    # Определяем чётность
     parity = context.user_data.get("parity", "ch")
     parity = normalize_parity(parity)
     context.user_data["parity"] = parity
     context.user_data["monday"] = find_week_monday(context.user_data["index_data"], parity)
     
-    # Подгруппа по умолчанию — всегда "1", если ничего не сохранено
     subgroup = normalize_subgroup(context.user_data.get("subgroup"))
     context.user_data["subgroup"] = subgroup
 
@@ -595,8 +625,9 @@ async def my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработчик ввода кода группы."""
+    user_id, username, full_name = get_user_info(update)
     user_input = update.message.text.strip()
-    logger.info(f"Получен ввод от пользователя: {user_input}")
+    logger.info(f"Получен ввод от пользователя {user_id} (@{username}): {user_input}")
     
     if user_input.startswith('/'):
         await update.message.reply_text(
@@ -610,7 +641,7 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     if not group_code or len(group_code) < 3:
         await update.message.reply_text(
-            "Неверный формат группы. Введите код, например: ИВТ-б-о-242",
+            "Неверный формат группы. Введите код, например: ИВТ-б-о-242 (большие буквы кода гуппы)",
             reply_markup=MAIN_KEYBOARD
         )
         return WAITING_GROUP
@@ -623,7 +654,8 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not data or not data.get("занятия"):
         await update.message.reply_text(
             "Не удалось найти расписание для этой группы.\n"
-            "Проверьте правильность кода и попробуйте снова.\n\n"
+            "Проверьте правильность кода и попробуйте снова.\n"
+            "(большие буквы кода гуппы)\n"
             "Примеры: ИВТ-б-о-242(1), ИВТ-б-о-242(2)",
             reply_markup=MAIN_KEYBOARD
         )
@@ -642,15 +674,29 @@ async def receive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data["data"] = data
     context.user_data["index_data"] = index_data
     
-    # Сохраняем данные пользователя
-    user_id = str(update.effective_user.id)
+    # Сохраняем данные пользователя с username
     all_user_data = load_user_data()
-    all_user_data[user_id] = {
-        "group_code": group_code,
-        "subgroup": subgroup
-    }
+    
+    # Проверяем, есть ли уже старые данные для этого пользователя
+    if user_id in all_user_data:
+        # Миграция старых данных
+        all_user_data = migrate_user_data(all_user_data, user_id, username, full_name)
+        # Обновляем group_code и subgroup (могли измениться)
+        all_user_data[user_id]["group_code"] = group_code
+        all_user_data[user_id]["subgroup"] = subgroup
+        all_user_data[user_id]["last_used"] = datetime.now().isoformat()
+    else:
+        # Новый пользователь
+        all_user_data[user_id] = {
+            "group_code": group_code,
+            "subgroup": subgroup,
+            "username": username,
+            "full_name": full_name,
+            "last_used": datetime.now().isoformat()
+        }
+    
     save_user_data(all_user_data)
-    logger.info(f"Данные сохранены для пользователя {user_id}")
+    logger.info(f"Данные сохранены для пользователя {user_id} (@{username})")
 
     keyboard = [
         [
@@ -679,7 +725,6 @@ async def choose_parity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     monday = find_week_monday(index_data, parity)
     context.user_data["monday"] = monday
 
-    # Подгруппа: берём сохранённую/введённую, по умолчанию "1" (понятия "все" больше нет)
     subgroup = normalize_subgroup(context.user_data.get("subgroup"))
     context.user_data["subgroup"] = subgroup
 
@@ -707,7 +752,6 @@ def get_schedule_keyboard(current_parity: str, current_subgroup: str,
         ]
     ]
     
-    # Кнопки переключения подгрупп (только конкретные, без "Все подгруппы")
     if len(available_subgroups) >= 2:
         subgroup_buttons = []
         for sg in available_subgroups:
@@ -767,7 +811,6 @@ async def send_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         chat_id = update.effective_chat.id
         
-        # Если это callback_query - редактируем сообщение
         if update.callback_query:
             await update.callback_query.message.reply_photo(
                 photo=image_buffer, reply_markup=reply_markup
@@ -821,10 +864,13 @@ async def switch_subgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     new_subgroup = query.data.split(":")[1]
     context.user_data["subgroup"] = new_subgroup
     
-    user_id = str(update.effective_user.id)
+    user_id, username, full_name = get_user_info(update)
     all_user_data = load_user_data()
     if user_id in all_user_data:
+        # Миграция старых данных (если ещё не обновились)
+        all_user_data = migrate_user_data(all_user_data, user_id, username, full_name)
         all_user_data[user_id]["subgroup"] = new_subgroup
+        all_user_data[user_id]["last_used"] = datetime.now().isoformat()
         save_user_data(all_user_data)
     
     await query.message.reply_text(f"🔄 Переключаю на подгруппу {new_subgroup}...")
