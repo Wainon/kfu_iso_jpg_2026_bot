@@ -110,7 +110,12 @@ SUBGROUP_TAG_RE = re.compile(r'\(?\s*п\s*/?\s*г\s*р\.?\s*(\d+)\s*\)?', re.IGN
 
 
 def detect_lesson_subgroup(lesson: dict):
-    
+    """
+    Определяет номер подгруппы занятия.
+    Сначала проверяем явное поле API (если оно вообще есть и заполнено),
+    затем ищем пометку вида "(п/гр 2)" в названии предмета.
+    Возвращает None, если занятие общее (без деления на подгруппы).
+    """
     raw = lesson.get("подгруппа")
     if raw:
         cleaned = clean_subgroup(raw)
@@ -300,10 +305,30 @@ def get_available_subgroups(lessons: list) -> list:
 # Отрисовка изображения расписания
 # --------------------------------------------------------------------------- #
 
+FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+
 def _load_fonts():
-    """Загружает шрифты для отрисовки."""
-    candidates_bold = ["DejaVuSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf"]
-    candidates_regular = ["DejaVuSans.ttf", "Arial.ttf", "arial.ttf"]
+    """
+    Загружает шрифты для отрисовки.
+
+    Сначала ищем шрифты, зашитые в проект (папка fonts/ рядом со скриптом) —
+    это гарантирует поддержку кириллицы на ЛЮБОМ хостинге (Railway, VPS и т.д.),
+    даже если в системе вообще не установлено ни одного .ttf-шрифта.
+    Если по каким-то причинам файлов нет — пробуем системные шрифты как запасной вариант.
+    """
+    candidates_bold = [
+        os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"),
+        "DejaVuSans-Bold.ttf",
+        "Arial Bold.ttf",
+        "arialbd.ttf",
+    ]
+    candidates_regular = [
+        os.path.join(FONTS_DIR, "DejaVuSans.ttf"),
+        "DejaVuSans.ttf",
+        "Arial.ttf",
+        "arial.ttf",
+    ]
 
     def _load(names, size):
         for name in names:
@@ -311,6 +336,11 @@ def _load_fonts():
                 return ImageFont.truetype(name, size)
             except Exception:
                 continue
+        logger.warning(
+            "Не найден ни один шрифт с поддержкой кириллицы — "
+            "текст на изображении будет отображаться некорректно. "
+            "Проверьте, что папка fonts/ загружена вместе со скриптом."
+        )
         return ImageFont.load_default()
 
     return {
