@@ -38,33 +38,95 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
-# Загрузка шрифтов (максимально упрощенно)
+# Загрузка шрифтов (с автоматическим скачиванием)
 # --------------------------------------------------------------------------- #
 
-# Пути к системным шрифтам
+# Пути к системным шрифтам в Debian
 FONT_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
-def _load_fonts():
-    """Загружает шрифты из системы."""
+# Папка для скачанных шрифтов
+FONTS_DIR = "/app/fonts"
+os.makedirs(FONTS_DIR, exist_ok=True)
+
+# URL для скачивания шрифтов
+FONT_URLS = {
+    "regular": "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf",
+    "bold": "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf",
+}
+
+LOCAL_FONT_PATHS = {
+    "regular": os.path.join(FONTS_DIR, "DejaVuSans.ttf"),
+    "bold": os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"),
+}
+
+
+def download_font(url: str, local_path: str) -> bool:
+    """Скачивает шрифт по URL и сохраняет в локальный файл."""
+    try:
+        logger.info(f"Скачиваю шрифт из {url}")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        with open(local_path, "wb") as f:
+            f.write(response.content)
+        logger.info(f"✅ Шрифт сохранен в {local_path}")
+        return True
+    except Exception as exc:
+        logger.error(f"Ошибка скачивания шрифта: {exc}")
+        return False
+
+
+def ensure_fonts():
+    """Проверяет наличие шрифтов, скачивает если нужно."""
     regular_path = None
     bold_path = None
     
+    # Сначала ищем системные шрифты
+    logger.info("🔍 Ищем системные шрифты...")
     for path in FONT_PATHS:
         if os.path.exists(path):
+            logger.info(f"✅ Найден шрифт: {path}")
             if "Bold" in path:
                 bold_path = path
             else:
                 regular_path = path
     
+    # Если системные не найдены - используем скачанные
+    if not regular_path or not bold_path:
+        logger.info("Системные шрифты не найдены, проверяю скачанные...")
+        
+        # Проверяем, есть ли скачанные шрифты
+        if os.path.exists(LOCAL_FONT_PATHS["regular"]):
+            logger.info(f"✅ Найден скачанный шрифт: {LOCAL_FONT_PATHS['regular']}")
+            regular_path = LOCAL_FONT_PATHS["regular"]
+        else:
+            logger.info("Скачиваю обычный шрифт...")
+            if download_font(FONT_URLS["regular"], LOCAL_FONT_PATHS["regular"]):
+                regular_path = LOCAL_FONT_PATHS["regular"]
+        
+        if os.path.exists(LOCAL_FONT_PATHS["bold"]):
+            logger.info(f"✅ Найден скачанный жирный шрифт: {LOCAL_FONT_PATHS['bold']}")
+            bold_path = LOCAL_FONT_PATHS["bold"]
+        else:
+            logger.info("Скачиваю жирный шрифт...")
+            if download_font(FONT_URLS["bold"], LOCAL_FONT_PATHS["bold"]):
+                bold_path = LOCAL_FONT_PATHS["bold"]
+    
+    return regular_path, bold_path
+
+
+def _load_fonts():
+    """Загружает шрифты для отрисовки."""
+    regular_path, bold_path = ensure_fonts()
+    
     # Если нашли шрифты - используем их
-    if regular_path and bold_path:
+    if regular_path and bold_path and os.path.exists(regular_path):
         try:
-            logger.info(f"Загружаем шрифты: regular={regular_path}, bold={bold_path}")
+            logger.info(f"✅ Загружаем шрифты: regular={regular_path}, bold={bold_path}")
             return {
                 "title": ImageFont.truetype(bold_path, 30),
                 "day": ImageFont.truetype(bold_path, 18),
@@ -79,7 +141,7 @@ def _load_fonts():
             logger.error(f"Ошибка загрузки шрифтов: {e}")
     
     # Если шрифтов нет - используем дефолтный
-    logger.warning("Шрифты не найдены, используем дефолтный")
+    logger.warning("Шрифты не найдены, используем дефолтный (кириллица может отображаться некорректно)")
     default_font = ImageFont.load_default()
     return {
         "title": default_font,
@@ -99,9 +161,9 @@ try:
     if features.check("freetype2"):
         logger.info("✅ Pillow поддерживает FreeType2")
     else:
-        logger.error("❌ Pillow НЕ поддерживает FreeType2")
+        logger.error("Pillow НЕ поддерживает FreeType2 — кириллица не будет работать!")
 except:
-    logger.warning("Не удалось проверить FreeType")
+    logger.warning("Не удалось проверить поддержку FreeType")
 
 
 # Состояния ConversationHandler
@@ -796,7 +858,7 @@ async def send_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"⚠️ Не удалось отправить фото расписания. Попробуйте обновить.",
+                    text=f"Не удалось отправить фото расписания. Попробуйте обновить.",
                 )
             except Exception:
                 logger.exception("Не удалось отправить сообщение об ошибке")
@@ -899,7 +961,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         if isinstance(update, Update) and update.effective_chat:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="⚠️ Произошла ошибка при обработке запроса. Попробуйте нажать «Обновить» или /start.",
+                text="Произошла ошибка при обработке запроса. Попробуйте нажать «Обновить» или /start.",
             )
     except Exception:
         logger.exception("Не удалось отправить сообщение об ошибке пользователю")
@@ -916,7 +978,7 @@ def main() -> None:
         fonts = _load_fonts()
         logger.info("✅ Шрифты успешно загружены при старте")
     except Exception as exc:
-        logger.error(f"❌ Не удалось загрузить шрифты при старте: {exc}")
+        logger.error(f"Не удалось загрузить шрифты при старте: {exc}")
 
     application = Application.builder().token(BOT_TOKEN).build()
 
