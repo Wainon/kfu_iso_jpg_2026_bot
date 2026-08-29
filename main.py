@@ -42,6 +42,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Диагностика: проверяем, собран ли Pillow с поддержкой FreeType.
+# Без FreeType ImageFont.truetype() не работает вообще (даже со встроенным шрифтом),
+# и Pillow всегда откатывается на крошечный ImageFont.load_default() -
+# именно так на изображении получаются "квадратики" вместо кириллицы.
+try:
+    from PIL import features as _pil_features
+    _has_freetype = _pil_features.check("freetype2")
+    if _has_freetype:
+        logger.info("Pillow собран с поддержкой FreeType2 — шрифты должны рисоваться корректно.")
+    else:
+        logger.error(
+            "ВНИМАНИЕ: Pillow собран БЕЗ поддержки FreeType2! "
+            "ImageFont.truetype() работать не будет, текст на изображениях "
+            "будет отображаться квадратиками. Переустановите Pillow "
+            "(pip install --force-reinstall --no-binary=:all: pillow "
+            "или просто убедитесь, что используется официальный wheel с PyPI)."
+        )
+except Exception as _exc:
+    logger.warning("Не удалось проверить поддержку FreeType в Pillow: %s", _exc)
+
 # Состояния ConversationHandler
 WAITING_GROUP, CHOOSE_PARITY, WAITING_ACTION = range(3)
 
@@ -322,11 +342,13 @@ def _load_fonts():
     def _load(font_bytes, size):
         try:
             return ImageFont.truetype(io.BytesIO(font_bytes), size)
-        except Exception as exc:
-            logger.warning(
-                "Не удалось загрузить встроенный шрифт (%s) — "
-                "текст на изображении может отображаться некорректно.",
-                exc,
+        except Exception:
+            logger.exception(
+                "Не удалось загрузить встроенный шрифт размера %s — "
+                "текст на изображении будет отображаться некорректно (квадратики). "
+                "См. полный traceback выше и проверьте поддержку FreeType в Pillow "
+                "(смотрите строку 'Pillow собран...' в самом начале логов при старте бота).",
+                size,
             )
             return ImageFont.load_default()
 
