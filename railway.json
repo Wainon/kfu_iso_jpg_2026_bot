@@ -1,5 +1,8 @@
 {
   "build": {
     "builder": "NIXPACKS"
+  },
+  "nixpacks": {
+    "pythonVersion": "3.11"
   }
 }
