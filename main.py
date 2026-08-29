@@ -44,45 +44,54 @@ logger = logging.getLogger(__name__)
 # Загрузка шрифтов
 # --------------------------------------------------------------------------- #
 
-# Список возможных путей к системным шрифтам (в порядке приоритета)
+# Пути к системным шрифтам в Railway (NixPacks)
 SYSTEM_FONT_PATHS = [
-    # Debian/Ubuntu
+    # Railway NixPacks
+    "/nix/store/*-dejavu-fonts-*/share/fonts/dejavu/DejaVuSans.ttf",
+    "/nix/store/*-dejavu-fonts-*/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    # Стандартные пути
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    # Alpine Linux
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-    # Общие пути
+    # Fallback
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
 ]
 
+# Папка для скачанных шрифтов (как fallback)
 FONTS_DIR = "fonts"
 os.makedirs(FONTS_DIR, exist_ok=True)
-LOCAL_FONT_PATHS = {
-    "regular": os.path.join(FONTS_DIR, "DejaVuSans.ttf"),
-    "bold": os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"),
-}
 
+# URL для скачивания шрифтов
 FONT_URLS = {
     "regular": "https://github.com/dejavu-fonts/dejavu-fonts/raw/refs/heads/master/ttf/DejaVuSans.ttf",
     "bold": "https://github.com/dejavu-fonts/dejavu-fonts/raw/refs/heads/master/ttf/DejaVuSans-Bold.ttf",
 }
 
+LOCAL_FONT_PATHS = {
+    "regular": os.path.join(FONTS_DIR, "DejaVuSans.ttf"),
+    "bold": os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"),
+}
+
 
 def find_system_font(style="regular") -> str:
-    """Ищет системный шрифт по списку путей."""
-    for path in SYSTEM_FONT_PATHS:
-        if style == "bold" and "Bold" in path:
-            if os.path.exists(path):
-                logger.info(f"Найден системный шрифт: {path}")
-                return path
-        elif style == "regular" and "Bold" not in path:
-            if os.path.exists(path):
-                logger.info(f"Найден системный шрифт: {path}")
-                return path
+    """Ищет системный шрифт."""
+    import glob
+    
+    for pattern in SYSTEM_FONT_PATHS:
+        if style == "bold" and "Bold" not in pattern:
+            continue
+        elif style == "regular" and "Bold" in pattern:
+            continue
+        
+        # Используем glob для поиска с wildcards
+        matches = glob.glob(pattern)
+        if matches:
+            font_path = matches[0]
+            logger.info(f"Найден системный шрифт: {font_path}")
+            return font_path
+    
     return None
 
 
@@ -102,18 +111,18 @@ def download_font(url: str, local_path: str) -> bool:
 
 
 def get_font_path(style="regular") -> str:
-    """Возвращает путь к файлу шрифта (системный или скачанный)."""
-    # Сначала ищем системный шрифт
+    """Возвращает путь к файлу шрифта."""
+    # 1. Сначала ищем системный шрифт
     system_path = find_system_font(style)
-    if system_path:
+    if system_path and os.path.exists(system_path):
         return system_path
     
-    # Если системного нет, используем локальный
+    # 2. Если системного нет, используем локальный
     local_path = LOCAL_FONT_PATHS[style]
     if os.path.exists(local_path):
         return local_path
     
-    # Скачиваем шрифт
+    # 3. Скачиваем шрифт
     url = FONT_URLS[style]
     if download_font(url, local_path):
         return local_path
@@ -125,37 +134,46 @@ def _load_fonts():
     """Загружает шрифты для отрисовки."""
     fonts = {}
     
-    for style, size in [
-        ("bold", 30), ("bold", 18), ("bold", 16), ("bold", 14),
-        ("regular", 14), ("regular", 13), ("regular", 12), ("regular", 13)
-    ]:
+    # Пробуем загрузить системные шрифты
+    font_configs = [
+        ("bold", 30, "title"),
+        ("bold", 18, "day"),
+        ("bold", 16, "period"),
+        ("bold", 14, "subject"),
+        ("regular", 14, "date"),
+        ("regular", 13, "time"),
+        ("regular", 12, "small"),
+        ("regular", 13, "footer"),
+    ]
+    
+    for style, size, key in font_configs:
         font_path = get_font_path(style)
         if font_path:
             try:
                 font = ImageFont.truetype(font_path, size)
-                key = {
-                    (30, "bold"): "title",
-                    (18, "bold"): "day",
-                    (16, "bold"): "period",
-                    (14, "bold"): "subject",
-                    (14, "regular"): "date",
-                    (13, "regular"): "time",
-                    (12, "regular"): "small",
-                    (13, "regular"): "footer",
-                }[(size, style)]
                 fonts[key] = font
-                logger.info(f"Загружен шрифт: {key} ({font_path})")
+                logger.info(f"Загружен шрифт: {key} из {font_path}")
             except Exception as exc:
                 logger.error(f"Ошибка загрузки шрифта {font_path}: {exc}")
         else:
-            logger.warning(f"Не найден шрифт для стиля {style}, используем default")
+            logger.warning(f"Не найден шрифт для {key}, используем дефолтный")
     
     # Заполняем недостающие шрифты дефолтными
     default_font = ImageFont.load_default()
     for key in ["title", "day", "date", "period", "time", "subject", "small", "footer"]:
         if key not in fonts:
             fonts[key] = default_font
-            logger.warning(f"Использую дефолтный шрифт для {key}")
+    
+    # Проверяем, есть ли поддержка кириллицы
+    test_font = fonts.get("title", default_font)
+    try:
+        # Пытаемся нарисовать текст с кириллицей
+        img = Image.new("RGB", (100, 50), "white")
+        draw = ImageDraw.Draw(img)
+        draw.text((10, 10), "Тест", font=test_font, fill="black")
+        logger.info("✅ Шрифты успешно загружены и поддерживают кириллицу")
+    except Exception as exc:
+        logger.error(f"❌ Ошибка при тестировании шрифта: {exc}")
     
     return fonts
 
@@ -168,7 +186,6 @@ try:
         logger.info("✅ Pillow собран с поддержкой FreeType2")
     else:
         logger.error("❌ Pillow собран БЕЗ поддержки FreeType2! Кириллица не будет отображаться.")
-        logger.error("Установите системные зависимости: apt-get install libfreetype6-dev")
 except Exception as _exc:
     logger.warning("Не удалось проверить поддержку FreeType: %s", _exc)
 
@@ -979,7 +996,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Запуск бота."""
-    # При старте загружаем шрифты в кэш
+    # При старте загружаем шрифты
     try:
         fonts = _load_fonts()
         logger.info("✅ Шрифты успешно загружены при старте")
