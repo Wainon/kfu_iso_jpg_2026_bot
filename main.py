@@ -1,3 +1,5 @@
+import base64
+import io
 import logging
 import re
 import json
@@ -7,6 +9,8 @@ from io import BytesIO
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
+
+from fonts_data import DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -305,53 +309,36 @@ def get_available_subgroups(lessons: list) -> list:
 # Отрисовка изображения расписания
 # --------------------------------------------------------------------------- #
 
-FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+# Шрифты декодируем один раз при старте прямо из base64, зашитого в fonts_data.py —
+# так кириллица рисуется корректно на любом хостинге, даже если в системе
+# не установлено вообще никаких .ttf-шрифтов, и не нужно деплоить отдельные файлы шрифтов.
+_FONT_REGULAR_BYTES = base64.b64decode(DEJAVU_SANS_REGULAR_B64)
+_FONT_BOLD_BYTES = base64.b64decode(DEJAVU_SANS_BOLD_B64)
 
 
 def _load_fonts():
-    """
-    Загружает шрифты для отрисовки.
+    """Загружает шрифты для отрисовки из встроенных (base64) данных."""
 
-    Сначала ищем шрифты, зашитые в проект (папка fonts/ рядом со скриптом) —
-    это гарантирует поддержку кириллицы на ЛЮБОМ хостинге (Railway, VPS и т.д.),
-    даже если в системе вообще не установлено ни одного .ttf-шрифта.
-    Если по каким-то причинам файлов нет — пробуем системные шрифты как запасной вариант.
-    """
-    candidates_bold = [
-        os.path.join(FONTS_DIR, "DejaVuSans-Bold.ttf"),
-        "DejaVuSans-Bold.ttf",
-        "Arial Bold.ttf",
-        "arialbd.ttf",
-    ]
-    candidates_regular = [
-        os.path.join(FONTS_DIR, "DejaVuSans.ttf"),
-        "DejaVuSans.ttf",
-        "Arial.ttf",
-        "arial.ttf",
-    ]
-
-    def _load(names, size):
-        for name in names:
-            try:
-                return ImageFont.truetype(name, size)
-            except Exception:
-                continue
-        logger.warning(
-            "Не найден ни один шрифт с поддержкой кириллицы — "
-            "текст на изображении будет отображаться некорректно. "
-            "Проверьте, что папка fonts/ загружена вместе со скриптом."
-        )
-        return ImageFont.load_default()
+    def _load(font_bytes, size):
+        try:
+            return ImageFont.truetype(io.BytesIO(font_bytes), size)
+        except Exception as exc:
+            logger.warning(
+                "Не удалось загрузить встроенный шрифт (%s) — "
+                "текст на изображении может отображаться некорректно.",
+                exc,
+            )
+            return ImageFont.load_default()
 
     return {
-        "title": _load(candidates_bold, 30),
-        "day": _load(candidates_bold, 18),
-        "date": _load(candidates_regular, 14),
-        "period": _load(candidates_bold, 16),
-        "time": _load(candidates_regular, 13),
-        "subject": _load(candidates_bold, 14),
-        "small": _load(candidates_regular, 12),
-        "footer": _load(candidates_regular, 13),
+        "title": _load(_FONT_BOLD_BYTES, 30),
+        "day": _load(_FONT_BOLD_BYTES, 18),
+        "date": _load(_FONT_REGULAR_BYTES, 14),
+        "period": _load(_FONT_BOLD_BYTES, 16),
+        "time": _load(_FONT_REGULAR_BYTES, 13),
+        "subject": _load(_FONT_BOLD_BYTES, 14),
+        "small": _load(_FONT_REGULAR_BYTES, 12),
+        "footer": _load(_FONT_REGULAR_BYTES, 13),
     }
 
 
